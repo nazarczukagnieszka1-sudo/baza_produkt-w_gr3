@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 
-# --- KONFIGURACJA ---
-st.set_page_config(page_title="Magazyn Supabase", layout="wide")
+# --- 1. KONFIGURACJA ---
+st.set_page_config(page_title="Magazyn Pro", layout="wide", page_icon="📊")
 
 @st.cache_resource
 def init_connection():
@@ -17,21 +17,21 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- FUNKCJE ---
+# --- 2. FUNKCJE POBIERANIA DANYCH ---
 def get_categories():
     res = supabase.table("kategorie").select("*").execute()
     return res.data
 
 def get_products():
-    # Pobieramy produkty z nazwą kategorii
     res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategorie(nazwa)").execute()
     return res.data
 
-# --- UI ---
-st.title("📦 System Zarządzania Magazynem")
-tab1, tab2 = st.tabs(["🛍️ Produkty", "📂 Kategorie"])
+# --- 3. INTERFEJS ---
+st.title("🚀 System Magazynowy z Analityką")
 
-# --- TABELA PRODUKTY ---
+tab1, tab2, tab3 = st.tabs(["🛍️ Produkty", "📂 Kategorie", "📈 Analityka"])
+
+# --- TABELA PRODUKTY (Z USUWANIEM) ---
 with tab1:
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -54,17 +54,11 @@ with tab1:
         prods = get_products()
         if prods:
             df_p = pd.json_normalize(prods)
-            # Mapowanie nazw kolumn (obsługa kropek z json_normalize)
-            rename_map = {'id': 'ID', 'nazwa': 'Nazwa', 'liczba': 'Sztuki', 'cena': 'Cena', 'kategorie.nazwa': 'Kategoria'}
-            df_p = df_p.rename(columns=rename_map)
-            # Wyświetlamy tylko te kolumny, które faktycznie istnieją w DataFrame
-            cols_to_show = [c for c in rename_map.values() if c in df_p.columns]
-            st.dataframe(df_p[cols_to_show], use_container_width=True, hide_index=True)
+            df_p = df_p.rename(columns={'id': 'ID', 'nazwa': 'Nazwa', 'liczba': 'Sztuki', 'cena': 'Cena', 'kategorie.nazwa': 'Kategoria'})
+            st.dataframe(df_p[['ID', 'Nazwa', 'Sztuki', 'Cena', 'Kategoria']], use_container_width=True, hide_index=True)
             
-            # USUWANIE PRODUKTU
-            st.divider()
-            p_del = st.selectbox("Usuń produkt (ID)", options=[p['id'] for p in prods])
-            if st.button("Usuń produkt"):
+            p_del = st.selectbox("Wybierz ID do usunięcia", options=[p['id'] for p in prods])
+            if st.button("Usuń produkt", type="primary"):
                 supabase.table("produkty").delete().eq("id", p_del).execute()
                 st.rerun()
 
@@ -80,28 +74,51 @@ with tab2:
                 if kn:
                     supabase.table("kategorie").insert({"nazwa": kn, "opis": ko}).execute()
                     st.rerun()
-
     with c2:
         st.subheader("Lista kategorii")
         kats = get_categories()
         if kats:
             df_kat = pd.DataFrame(kats)
+            cols = [c for c in ['id', 'nazwa', 'opis'] if c in df_kat.columns]
+            st.table(df_kat[cols])
+
+# --- TABELA ANALITYKA I WYKRESY ---
+with tab3:
+    st.header("📊 Raport Magazynowy")
+    prods = get_products()
+    
+    if prods:
+        df_raw = pd.json_normalize(prods)
+        # Obliczanie łącznej wartości
+        df_raw['Wartość'] = df_raw['liczba'] * df_raw['cena']
+        
+        # Statystyki ogólne
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Suma sztuk", int(df_raw['liczba'].sum()))
+        m2.metric("Łączna wartość", f"{df_raw['Wartość'].sum():,.2f} zł")
+        m3.metric("Liczba produktów", len(df_raw))
+
+        st.divider()
+        
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.subheader("📦 Ilość towaru wg kategorii")
+            # Grupowanie danych do wykresu
+            chart_data = df_raw.groupby('kategorie.nazwa')['liczba'].sum()
+            st.bar_chart(chart_data)
+
+        with col_right:
+            st.subheader("💰 Wartość magazynu wg kategorii")
+            val_data = df_raw.groupby('kategorie.nazwa')['Wartość'].sum()
+            st.area_chart(val_data)
             
-            # --- ROZWIĄZANIE BŁĘDU KeyError ---
-            # Sprawdzamy, które kolumny z listy ['id', 'nazwa', 'opis'] faktycznie są w df_kat
-            wymagane_kolumny = ['id', 'nazwa', 'opis']
-            istniejace_kolumny = [col for col in wymagane_kolumny if col in df_kat.columns]
-            
-            st.table(df_kat[istniejace_kolumny])
-            
-            # USUWANIE KATEGORII
-            st.divider()
-            k_del = st.selectbox("Usuń kategorię (ID)", options=[k['id'] for k in kats])
-            if st.button("Usuń kategorię"):
-                try:
-                    supabase.table("kategorie").delete().eq("id", k_del).execute()
-                    st.rerun()
-                except:
-                    st.error("Nie można usunąć kategorii, która ma przypisane produkty!")
-        else:
-            st.info("Brak kategorii.")
+        st.subheader("📄 Podsumowanie tabelaryczne")
+        summary_df = df_raw.groupby('kategorie.nazwa').agg({
+            'id': 'count',
+            'liczba': 'sum',
+            'Wartość': 'sum'
+        }).rename(columns={'id': 'Ilość typów', 'liczba': 'Suma sztuk', 'Wartość': 'Suma wartość (zł)'})
+        st.dataframe(summary_df, use_container_width=True)
+    else:
+        st.info("Dodaj produkty, aby zobaczyć statystyki.")

@@ -2,10 +2,14 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 
-# --- KONFIGURACJA POŁĄCZENIA ---
-# Upewnij się, że w .streamlit/secrets.toml masz zdefiniowane SUPABASE_URL i SUPABASE_KEY
-URL = st.secrets["SUPABASE_URL"]
-KEY = st.secrets["SUPABASE_KEY"]
+# --- 1. KONFIGURACJA I POŁĄCZENIE ---
+# Dane pobierane z .streamlit/secrets.toml
+try:
+    URL = st.secrets["SUPABASE_URL"]
+    KEY = st.secrets["SUPABASE_KEY"]
+except Exception:
+    st.error("Błąd: Brak kluczy Supabase w secrets.toml!")
+    st.stop()
 
 @st.cache_resource
 def init_connection():
@@ -13,111 +17,106 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- FUNKCJE POMOCNICZE ---
+# --- 2. FUNKCJE LOGICZNE (CRUD) ---
+
 def get_categories():
-    """Pobiera kategorie i zwraca słownik {nazwa: id}."""
-    try:
-        res = supabase.table("kategorie").select("id, nazwa").execute()
-        return {item['nazwa']: item['id'] for item in res.data}
-    except Exception as e:
-        st.error(f"Błąd pobierania kategorii: {e}")
-        return {}
+    """Pobiera dostępne kategorie."""
+    res = supabase.table("kategorie").select("id, nazwa").execute()
+    return {item['nazwa']: item['id'] for item in res.data}
+
+def add_category(name, description):
+    """Dodaje nową kategorię."""
+    supabase.table("kategorie").insert({"nazwa": name, "opis": description}).execute()
+
+def add_product(name, quantity, price, cat_id):
+    """Dodaje nowy produkt."""
+    data = {
+        "nazwa": name,
+        "liczba": quantity,
+        "cena": price,
+        "kategoria_id": cat_id
+    }
+    supabase.table("produkty").insert(data).execute()
 
 def delete_product(product_id):
-    """Usuwa produkt z bazy i odświeża stronę."""
-    try:
-        supabase.table("produkty").delete().eq("id", product_id).execute()
-        st.success("Produkt został pomyślnie usunięty!")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Nie udało się usunąć produktu: {e}")
+    """Usuwa produkt po ID."""
+    supabase.table("produkty").delete().eq("id", product_id).execute()
 
-# --- INTERFEJS UŻYTKOWNIKA ---
-st.set_page_config(page_title="Magazyn Supabase", layout="centered")
-st.title("📦 System Zarządzania Produktami")
+# --- 3. INTERFEJS UŻYTKOWNIKA (UI) ---
 
-# --- PANEL 1: DODAWANIE KATEGORII ---
-with st.expander("➕ Dodaj nową kategorię"):
-    with st.form("category_form", clear_on_submit=True):
-        kat_nazwa = st.text_input("Nazwa kategorii")
-        kat_opis = st.text_area("Opis kategorii")
-        submit_kat = st.form_submit_button("Zapisz kategorię")
+st.set_page_config(page_title="Magazyn v2", layout="wide")
+st.title("📦 System Zarządzania Magazynem")
 
-        if submit_kat:
-            if kat_nazwa:
-                supabase.table("kategorie").insert({"nazwa": kat_nazwa, "opis": kat_opis}).execute()
-                st.success(f"Dodano kategorię: {kat_nazwa}")
-                st.rerun()
+# Sidebar - nawigacja
+menu = st.sidebar.radio("Menu", ["Podgląd i Usuwanie", "Dodaj Produkt", "Dodaj Kategorię"])
+
+# --- SEKCJA: DODAWANIE KATEGORII ---
+if menu == "Dodaj Kategorię":
+    st.header("Nowa Kategoria")
+    with st.form("kat_form", clear_on_submit=True):
+        n = st.text_input("Nazwa kategorii")
+        o = st.text_area("Opis")
+        if st.form_submit_button("Zapisz"):
+            if n:
+                add_category(n, o)
+                st.success(f"Dodano: {n}")
             else:
-                st.error("Nazwa kategorii jest wymagana!")
+                st.warning("Podaj nazwę!")
 
-# --- PANEL 2: DODAWANIE PRODUKTU ---
-st.header("Dodaj nowy produkt")
-categories_dict = get_categories()
+# --- SEKCJA: DODAWANIE PRODUKTU ---
+elif menu == "Dodaj Produkt":
+    st.header("Nowy Produkt")
+    kategorie = get_categories()
+    
+    if not kategorie:
+        st.error("Najpierw dodaj kategorię w menu bocznym!")
+    else:
+        with st.form("prod_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                p_nazwa = st.text_input("Nazwa produktu")
+                p_cena = st.number_input("Cena (PLN)", min_value=0.0, step=0.01)
+            with col2:
+                p_ilosc = st.number_input("Ilość", min_value=0, step=1)
+                p_kat = st.selectbox("Kategoria", options=list(kategorie.keys()))
+            
+            if st.form_submit_button("Dodaj do bazy"):
+                if p_nazwa:
+                    add_product(p_nazwa, p_ilosc, p_cena, kategorie[p_kat])
+                    st.success(f"Produkt {p_nazwa} został dodany.")
+                else:
+                    st.warning("Nazwa jest wymagana!")
 
-if not categories_dict:
-    st.warning("Najpierw dodaj przynajmniej jedną kategorię!")
-else:
-    with st.form("product_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            prod_nazwa = st.text_input("Nazwa produktu")
-            prod_cena = st.number_input("Cena", min_value=0.0, format="%.2f")
-        with col2:
-            prod_liczba = st.number_input("Liczba (sztuki)", min_value=0, step=1)
-            wybrana_kat_nazwa = st.selectbox("Wybierz kategorię", options=list(categories_dict.keys()))
+# --- SEKCJA: PODGLĄD I USUWANIE ---
+elif menu == "Podgląd i Usuwanie":
+    st.header("Stan Magazynowy")
+    
+    # Pobranie danych z JOINEM (pobieramy nazwę kategorii z relacji)
+    res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategorie(nazwa)").execute()
+    
+    if res.data:
+        # Formatowanie danych do tabeli
+        df_data = []
+        for item in res.data:
+            df_data.append({
+                "ID": item['id'],
+                "Nazwa": item['nazwa'],
+                "Ilość": item['liczba'],
+                "Cena": f"{item['cena']:.2f} zł",
+                "Kategoria": item['kategorie']['nazwa'] if item['kategorie'] else "Brak"
+            })
         
-        submit_prod = st.form_submit_button("Dodaj produkt do bazy")
-
-        if submit_prod:
-            if prod_nazwa:
-                prod_data = {
-                    "nazwa": prod_nazwa,
-                    "liczba": prod_liczba,
-                    "cena": prod_cena,
-                    "kategoria_id": categories_dict[wybrana_kat_nazwa]
-                }
-                supabase.table("produkty").insert(prod_data).execute()
-                st.success(f"Dodano produkt: {prod_nazwa}")
-                st.rerun()
-            else:
-                st.error("Uzupełnij nazwę produktu!")
-
-st.divider()
-
-# --- PANEL 3: PODGLĄD I USUWANIE ---
-st.header("📋 Aktualny stan magazynowy")
-
-# Pobranie danych produktów wraz z nazwą kategorii (Join)
-products_res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategorie(nazwa)").execute()
-products_list = products_res.data
-
-if products_list:
-    # Przygotowanie danych do tabeli
-    display_data = []
-    for p in products_list:
-        display_data.append({
-            "ID": p['id'],
-            "Nazwa": p['nazwa'],
-            "Sztuki": p['liczba'],
-            "Cena": f"{p['cena']:.2f} zł",
-            "Kategoria": p['kategorie']['nazwa'] if p['kategorie'] else "Brak"
-        })
-    
-    df = pd.DataFrame(display_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # Sekcja usuwania
-    st.subheader("🗑️ Usuwanie produktów")
-    delete_options = {f"{p['nazwa']} (ID: {p['id']})": p['id'] for p in products_list}
-    
-    col_sel, col_btn = st.columns([3, 1])
-    with col_sel:
-        to_delete_label = st.selectbox("Wybierz produkt do usunięcia", options=list(delete_options.keys()))
-    with col_btn:
-        st.write(" ") # Odstęp dla wyrównania
-        st.write(" ")
-        if st.button("Usuń trwale", type="primary", use_container_width=True):
-            delete_product(delete_options[to_delete_label])
-else:
-    st.info("Baza danych jest obecnie pusta.")
+        df = pd.DataFrame(df_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.subheader("Usuń produkt")
+        # Wybór produktu do usunięcia
+        options = {f"{row['Nazwa']} (ID: {row['ID']})": row['ID'] for row in df_data}
+        target = st.selectbox("Wybierz produkt", options=list(options.keys()))
+        
+        if st.button("Usuń zaznaczony produkt", type="primary"):
+            delete_product(options[target])
+            st.rerun()
+    else:
+        st.info("Magazyn jest pusty.")

@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 
-# --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="Magazyn Supabase", layout="wide", page_icon="📦")
+# --- KONFIGURACJA ---
+st.set_page_config(page_title="Magazyn Supabase", layout="wide")
 
-# --- POŁĄCZENIE Z SUPABASE ---
 @st.cache_resource
 def init_connection():
     try:
@@ -13,106 +12,96 @@ def init_connection():
         key = st.secrets["SUPABASE_KEY"]
         return create_client(url, key)
     except Exception:
-        st.error("Błąd: Skonfiguruj SUPABASE_URL i SUPABASE_KEY w Secrets!")
+        st.error("Błąd: Brak kluczy w Secrets!")
         st.stop()
 
 supabase = init_connection()
 
-# --- FUNKCJE POMOCNICZE ---
+# --- FUNKCJE ---
 def get_categories():
-    res = supabase.table("kategorie").select("id, nazwa").execute()
+    res = supabase.table("kategorie").select("*").execute()
     return res.data
 
 def get_products():
-    # Pobieramy produkty wraz z nazwą kategorii dzięki relacji klucza obcego
+    # Pobieramy produkty z nazwą kategorii
     res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategorie(nazwa)").execute()
     return res.data
 
-# --- INTERFEJS UŻYTKOWNIKA ---
+# --- UI ---
 st.title("📦 System Zarządzania Magazynem")
-
 tab1, tab2 = st.tabs(["🛍️ Produkty", "📂 Kategorie"])
 
-# --- TAB 1: ZARZĄDZANIE PRODUKTAMI ---
+# --- TABELA PRODUKTY ---
 with tab1:
     col1, col2 = st.columns([1, 2])
-    
     with col1:
         st.subheader("Dodaj produkt")
-        kategorie_data = get_categories()
-        kat_options = {item['nazwa']: item['id'] for item in kategorie_data}
+        kat_data = get_categories()
+        kat_dict = {item['nazwa']: item['id'] for item in kat_data}
         
-        with st.form("form_produkt", clear_on_submit=True):
-            p_nazwa = st.text_input("Nazwa produktu")
-            p_liczba = st.number_input("Ilość", min_value=0, step=1)
-            p_cena = st.number_input("Cena", min_value=0.0, format="%.2f")
-            p_kat = st.selectbox("Kategoria", options=list(kat_options.keys()) if kat_options else ["Brak kategorii"])
-            
-            if st.form_submit_button("Zapisz produkt"):
-                if p_nazwa and kat_options:
-                    supabase.table("produkty").insert({
-                        "nazwa": p_nazwa, 
-                        "liczba": p_liczba, 
-                        "cena": p_cena, 
-                        "kategoria_id": kat_options[p_kat]
-                    }).execute()
-                    st.success("Dodano produkt!")
+        with st.form("f_prod", clear_on_submit=True):
+            n = st.text_input("Nazwa")
+            l = st.number_input("Ilość", min_value=0)
+            c = st.number_input("Cena", min_value=0.0)
+            k = st.selectbox("Kategoria", options=list(kat_dict.keys()) if kat_dict else ["Brak"])
+            if st.form_submit_button("Zapisz"):
+                if n and kat_dict:
+                    supabase.table("produkty").insert({"nazwa": n, "liczba": l, "cena": c, "kategoria_id": kat_dict[k]}).execute()
                     st.rerun()
 
     with col2:
         st.subheader("Lista produktów")
-        produkty = get_products()
-        if produkty:
-            df_prod = pd.json_normalize(produkty)
-            # Zmiana nazw kolumn dla czytelności
-            df_prod = df_prod.rename(columns={
-                'id': 'ID', 'nazwa': 'Nazwa', 'liczba': 'Sztuki', 
-                'cena': 'Cena', 'kategorie.nazwa': 'Kategoria'
-            })
-            st.dataframe(df_prod[['ID', 'Nazwa', 'Sztuki', 'Cena', 'Kategoria']], use_container_width=True, hide_index=True)
+        prods = get_products()
+        if prods:
+            df_p = pd.json_normalize(prods)
+            # Mapowanie nazw kolumn (obsługa kropek z json_normalize)
+            rename_map = {'id': 'ID', 'nazwa': 'Nazwa', 'liczba': 'Sztuki', 'cena': 'Cena', 'kategorie.nazwa': 'Kategoria'}
+            df_p = df_p.rename(columns=rename_map)
+            # Wyświetlamy tylko te kolumny, które faktycznie istnieją w DataFrame
+            cols_to_show = [c for c in rename_map.values() if c in df_p.columns]
+            st.dataframe(df_p[cols_to_show], use_container_width=True, hide_index=True)
             
+            # USUWANIE PRODUKTU
             st.divider()
-            st.subheader("Usuń produkt")
-            p_to_del = st.selectbox("Wybierz produkt do usunięcia", options=[p['id'] for p in produkty], format_func=lambda x: next(p['nazwa'] for p in produkty if p['id'] == x))
-            if st.button("Usuń wybrany produkt", type="primary"):
-                supabase.table("produkty").delete().eq("id", p_to_del).execute()
-                st.success("Usunięto!")
+            p_del = st.selectbox("Usuń produkt (ID)", options=[p['id'] for p in prods])
+            if st.button("Usuń produkt"):
+                supabase.table("produkty").delete().eq("id", p_del).execute()
                 st.rerun()
-        else:
-            st.info("Brak produktów.")
 
-# --- TAB 2: ZARZĄDZANIE KATEGORIAMI ---
+# --- TABELA KATEGORIE ---
 with tab2:
-    col_a, col_b = st.columns([1, 2])
-    
-    with col_a:
+    c1, c2 = st.columns([1, 2])
+    with c1:
         st.subheader("Dodaj kategorię")
-        with st.form("form_kategoria", clear_on_submit=True):
-            k_nazwa = st.text_input("Nazwa kategorii")
-            k_opis = st.text_area("Opis")
-            if st.form_submit_button("Zapisz kategorię"):
-                if k_nazwa:
-                    supabase.table("kategorie").insert({"nazwa": k_nazwa, "opis": k_opis}).execute()
-                    st.success("Dodano kategorię!")
+        with st.form("f_kat", clear_on_submit=True):
+            kn = st.text_input("Nazwa kategorii")
+            ko = st.text_area("Opis")
+            if st.form_submit_button("Zapisz"):
+                if kn:
+                    supabase.table("kategorie").insert({"nazwa": kn, "opis": ko}).execute()
                     st.rerun()
 
-    with col_b:
+    with c2:
         st.subheader("Lista kategorii")
-        kategorie = get_categories()
-        if kategorie:
-            df_kat = pd.DataFrame(kategorie)
-            st.table(df_kat[['id', 'nazwa', 'opis']])
+        kats = get_categories()
+        if kats:
+            df_kat = pd.DataFrame(kats)
             
+            # --- ROZWIĄZANIE BŁĘDU KeyError ---
+            # Sprawdzamy, które kolumny z listy ['id', 'nazwa', 'opis'] faktycznie są w df_kat
+            wymagane_kolumny = ['id', 'nazwa', 'opis']
+            istniejace_kolumny = [col for col in wymagane_kolumny if col in df_kat.columns]
+            
+            st.table(df_kat[istniejace_kolumny])
+            
+            # USUWANIE KATEGORII
             st.divider()
-            st.subheader("Usuń kategorię")
-            st.warning("Uwaga: Usunięcie kategorii może usunąć przypisane do niej produkty (zależnie od ustawień bazy SQL).")
-            k_to_del = st.selectbox("Wybierz kategorię do usunięcia", options=[k['id'] for k in kategorie], format_func=lambda x: next(k['nazwa'] for k in kategorie if k['id'] == x))
-            if st.button("Usuń wybraną kategorię", type="primary"):
+            k_del = st.selectbox("Usuń kategorię (ID)", options=[k['id'] for k in kats])
+            if st.button("Usuń kategorię"):
                 try:
-                    supabase.table("kategorie").delete().eq("id", k_to_del).execute()
-                    st.success("Usunięto kategorię!")
+                    supabase.table("kategorie").delete().eq("id", k_del).execute()
                     st.rerun()
-                except Exception as e:
-                    st.error("Nie można usunąć kategorii, która posiada produkty (błąd klucza obcego).")
+                except:
+                    st.error("Nie można usunąć kategorii, która ma przypisane produkty!")
         else:
             st.info("Brak kategorii.")
